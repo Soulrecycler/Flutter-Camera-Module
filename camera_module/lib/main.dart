@@ -9,10 +9,9 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Camera Module',
+      title: AppStrings.cameraModuleTitle,
       debugShowCheckedModeBanner: false,
-      home: CameraScreen(
-      ),
+      home: CameraScreen(),
     );
   }
 }
