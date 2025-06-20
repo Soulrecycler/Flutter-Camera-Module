@@ -17,7 +17,7 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
   bool _imageConfirmed = false;
 
   // handles on back pressed
-  Future<bool> _onWillPop() async {
+  Future<bool> _handleBackNavigation() async {
     return await showDialog(
           context: context,
           builder: (context) => AlertDialog(
@@ -44,7 +44,6 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
 // validates the images
   void _confirmImage() async {
     _imageConfirmed = true;
-    // ToDo: need to handle the routing of the selected image
     // Pop the current screen and pass the image file
     Navigator.pop(context, widget.imageFile);
   }
@@ -85,9 +84,25 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
   @override
   Widget build(BuildContext context) {
     return WillPopScope(
-      onWillPop: _onWillPop,
+      onWillPop: _handleBackNavigation,
       child: Scaffold(
-        backgroundColor: Colors.white,
+        // Top bar with back button so users can navigate back
+        // and can handle the delete of the image when _handleBackNavigation() will trigger.
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          backgroundColor: Colors.black,
+          elevation: 0,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            onPressed: () async {
+              bool shouldPop = await _handleBackNavigation();
+              if (shouldPop) {
+                Navigator.of(context).pop();
+              }
+            },
+          ),
+        ),
+        backgroundColor: Colors.black,
         body: SafeArea(
           child: Column(
             children: [
@@ -112,23 +127,31 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
               ),
               Padding(
                 padding:
-                    const EdgeInsets.symmetric(vertical: 20, horizontal: 40),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    FloatingActionButton(
-                      heroTag: AppStrings.heroTitleImagePreviewCancelButton,
-                      backgroundColor: Colors.redAccent,
-                      onPressed: _discardImage,
-                      child: const Icon(Icons.close),
-                    ),
-                    FloatingActionButton(
-                      heroTag: AppStrings.heroTitleImagePreviewConfirmButton,
-                      backgroundColor: Colors.green,
-                      onPressed: _confirmImage,
-                      child: const Icon(Icons.check),
-                    ),
-                  ],
+                    const EdgeInsets.symmetric(vertical: 5, horizontal: 15),
+                child: Container(
+                  height: 50,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF131313),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      TextButton(
+                        onPressed: _discardImage,
+                        child: const Text(
+                          AppStrings.retakeButton,
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _confirmImage,
+                        child: const Text(
+                          AppStrings.usePhotoButton,
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],

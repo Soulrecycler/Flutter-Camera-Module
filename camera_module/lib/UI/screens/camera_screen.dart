@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:camera_module/camera_module.dart';
 import 'package:image/image.dart' as img;
+import 'package:camera_module/services/landmark_service.dart';
 
-const platform = MethodChannel('camera_module/image_channel');
+const platform = MethodChannel(AppStrings.cameraMethodChannelName);
 
 class CameraScreen extends StatefulWidget {
   final CameraConfig? config;
@@ -22,15 +25,23 @@ class _CameraScreenState extends State<CameraScreen>
   List<CameraDescription> _cameras = [];
   late CameraConfig _config;
 
+  // Landmark detection
+  final LandmarkService _landmarkService = LandmarkService();
+  String? _landmarkName;
+  String? _landmarkDescription;
+  bool _isDetecting = false;
+
   // On create method all inititialization done here
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _config = CameraBuilder()
-        .setResolution('high') // default set to high
-        .setOrientation('portrait') // default set to portrait
+        .setResolution(AppStrings.defaultResolution) // default set to high
+        .setOrientation(
+            AppStrings.defaultOrientation) // default set to portrait
         .enableBoundingBox(false) // default set to false
+        .returnImageAsBase64(false)
         .build();
     _initializeCamera().then((_) {
       // Only set the method handler AFTER camera is initialized
@@ -41,45 +52,24 @@ class _CameraScreenState extends State<CameraScreen>
   // handles the method call "sendCameraConfig which sends the user related data
   Future<void> _handleMethodCall(MethodCall call) async {
     switch (call.method) {
-      case 'sendCameraConfig':
+      case AppStrings.cameraConfigMethodCall:
         if (call.arguments != null && call.arguments is Map) {
           final Map<dynamic, dynamic> args = call.arguments;
-          final permissionStatus = await Permission.camera.request();
-          if (permissionStatus == PermissionStatus.granted) {
-            _config = CameraBuilder()
-                .setResolution(args['resolution'] ?? 'high') // default set to high
-                .setOrientation(args['orientation'] ?? 'portrait') // default set to portrait
-                .enableBoundingBox(args['boundingBoxEnabled'] ?? false) // default set to false
-                .build();
-            await _initializeCamera();
-          } else {
-            _showNoPermissionsDialog();
-          }
+          _config = CameraBuilder()
+              .setResolution(args[AppStrings.resolutionArgs] ??
+                  AppStrings.defaultResolution) // default set to high
+              .setOrientation(args[AppStrings.orientationArgs] ??
+                  AppStrings.defaultOrientation) // default set to portrait
+              .enableBoundingBox(
+                  args[AppStrings.boundingBoxEnabledArgs] ?? false)
+              .returnImageAsBase64(args[AppStrings.returnImageAsBase64Args] ??
+                  false) // default set to false
+              .build();
+          await _initializeCamera();
         }
         break;
       default:
     }
-  }
-
-  // when permissions are denied this error dialogue will be shown
-  Future<void> _showNoPermissionsDialog() async {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: Text('No camera permissions granted'),
-        content: Text('Please grant camera permissions to use the camera.'),
-        actions: [
-          ElevatedButton(
-            onPressed: () {
-              platform.invokeMethod("noCameraPermissionsEncountered");
-              Navigator.of(context).pop();
-            },
-            child: Text('OK'),
-          ),
-        ],
-      ),
-    );
   }
 
   // The main function that initializes the camera
@@ -102,7 +92,7 @@ class _CameraScreenState extends State<CameraScreen>
 
       if (config != null && config.orientation.isNotEmpty) {
         await _controller!.lockCaptureOrientation(
-          config.orientation.toLowerCase() == 'portrait'
+          config.orientation.toLowerCase() == AppStrings.defaultOrientation
               ? DeviceOrientation.portraitUp
               : DeviceOrientation.landscapeLeft,
         );
@@ -121,17 +111,17 @@ class _CameraScreenState extends State<CameraScreen>
   //Gets user resolution and adds it in the initilization of the camera
   ResolutionPreset _getResolutionPreset(String value) {
     switch (value.toLowerCase()) {
-      case 'low':
+      case AppStrings.resolutionLow:
         return ResolutionPreset.low;
-      case 'medium':
+      case AppStrings.resolutionMedium:
         return ResolutionPreset.medium;
-      case 'high':
+      case AppStrings.resolutionHigh:
         return ResolutionPreset.high;
-      case 'veryhigh':
+      case AppStrings.resolutionVeryhigh:
         return ResolutionPreset.veryHigh;
-      case 'ultrahigh':
+      case AppStrings.resolutionUltrahigh:
         return ResolutionPreset.ultraHigh;
-      case 'max':
+      case AppStrings.resolutionMax:
         return ResolutionPreset.max;
       default:
         return ResolutionPreset.high;
@@ -158,9 +148,19 @@ class _CameraScreenState extends State<CameraScreen>
 
       if (confirmedImage != null) {
         try {
-          await platform.invokeMethod('onImageCaptured', {
-            'imagePath': confirmedImage.path,
-          });
+          //Checks if User chooses to return the image as Base64 else returns imagePath as default
+          if (_config.returnImageAsBase64) {
+            final Uint8List bytes = await confirmedImage.readAsBytes();
+            await _deleteImageIfExists(confirmedImage);
+            final String base64String = base64Encode(bytes);
+            await platform.invokeMethod(AppStrings.onImageCapturedMethodCall, {
+              AppStrings.imageBase64Text: base64String,
+            });
+          } else {
+            await platform.invokeMethod(AppStrings.onImageCapturedMethodCall, {
+              AppStrings.imagePathText: confirmedImage.path,
+            });
+          }
         } catch (e) {
           // Silent fail if running standalone
         }
@@ -168,7 +168,7 @@ class _CameraScreenState extends State<CameraScreen>
         await _deleteImageIfExists(imageFile);
       }
     } catch (e) {
-      _showCameraError("Failed to capture image.");
+      _showCameraError(AppStrings.failedToCaptureImageErrorMessage);
     }
   }
 
@@ -214,6 +214,7 @@ class _CameraScreenState extends State<CameraScreen>
   @override
   void dispose() {
     _controller?.dispose();
+    _landmarkService.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -229,54 +230,176 @@ class _CameraScreenState extends State<CameraScreen>
     }
   }
 
-  @override
+  Future<void> _detectLandmark() async {
+    if (_controller == null || !_controller!.value.isInitialized || _isDetecting) return;
+    setState(() {
+      _isDetecting = true;
+      _landmarkName = null;
+      _landmarkDescription = null;
+    });
+    try {
+      final xFile = await _controller!.takePicture();
+      final file = File(xFile.path);
+      final landmark = await _landmarkService.detectLandmark(file);
+      if (landmark != null) {
+        final description = await _landmarkService.fetchWikipediaSummary(landmark);
+        setState(() {
+          _landmarkName = landmark;
+          _landmarkDescription = description ?? 'No description found.';
+        });
+      } else {
+        setState(() {
+          _landmarkName = 'No landmark detected.';
+          _landmarkDescription = null;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _landmarkName = 'Error detecting landmark.';
+        _landmarkDescription = null;
+      });
+    } finally {
+      setState(() {
+        _isDetecting = false;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       body: _isCameraReady
-          ? Column(
-              children: [
-                cameraPreviewUi(),
-                // CAMERA BUTTON at bottom-center
-                Padding(
-                  padding: EdgeInsets.only(top: 20),
-                  child: Positioned(
-                    bottom: 10,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: FloatingActionButton(
-                        onPressed: _takePicture,
-                        child: Icon(Icons.camera),
-                      ),
+          ? SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  Container(
+                    height: 80,
+                    width: double.infinity,
+                    color: Colors.black,
+                  ),
+                  Expanded(
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        cameraPreviewUi(),
+                        if (_landmarkName != null)
+                          Positioned(
+                            left: 16,
+                            right: 16,
+                            bottom: 170,
+                            child: Card(
+                              color: Colors.black.withOpacity(0.7),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12.0),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _landmarkName!,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 18,
+                                      ),
+                                    ),
+                                    if (_landmarkDescription != null)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 8.0),
+                                        child: Text(
+                                          _landmarkDescription!,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (_isDetecting)
+                          const Center(child: CircularProgressIndicator()),
+                      ],
                     ),
                   ),
-                )
-              ],
+                  bottomCameraButtons(),
+                ],
+              ),
             )
-
-          //Loader is shown when the camera isnt ready
-          : Center(child: CircularProgressIndicator()),
+          : const Center(child: CircularProgressIndicator()),
     );
   }
 
   Widget cameraPreviewUi() {
-    return Stack(
-      children: [
-        if (_controller != null && _controller!.value.isInitialized)
-          CameraPreview(_controller!),
-        if (_config.boundingBoxEnabled == true)
-          Center(
-            child: Container(
-              width: 250,
-              height: 250,
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.greenAccent, width: 2),
-                borderRadius: BorderRadius.circular(8),
+    return Expanded(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          double width = constraints.maxWidth;
+          double boundingBoxSize = width - 30; // 10 padding on each side
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_controller != null && _controller!.value.isInitialized)
+                CameraPreview(_controller!),
+              if (_config.boundingBoxEnabled == true)
+                Center(
+                  child: Container(
+                    height: boundingBoxSize,
+                    width: boundingBoxSize,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.white, width: 2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget bottomCameraButtons() {
+    return Container(
+      height: 150,
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Stack(
+        children: [
+          //  Left: Cancel Button
+          Align(
+            alignment: Alignment.centerLeft,
+            child: CircleAvatar(
+              backgroundColor: Colors.black.withAlpha(128),
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: () => SystemNavigator.pop(),
               ),
             ),
           ),
-      ],
+          // Center: Camera Button
+          Center(
+            child: FloatingActionButton(
+              onPressed: _takePicture,
+              child: const Icon(Icons.camera),
+            ),
+          ),
+          // Right: Landmark Detection Button
+          Align(
+            alignment: Alignment.centerRight,
+            child: CircleAvatar(
+              backgroundColor: Colors.black.withAlpha(128),
+              child: IconButton(
+                icon: const Icon(Icons.info_outline, color: Colors.white),
+                onPressed: _detectLandmark,
+                tooltip: 'Detect Landmark',
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
